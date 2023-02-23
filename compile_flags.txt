@@ -1,3 +1,4 @@
 -std=c++17
 -Wall
 -Wextra
+-I../../.pyenv/versions/3.10.4/include/python3.10
