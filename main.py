@@ -1,4 +1,4 @@
-from math import sqrt
+from math import sqrt, hypot
 
 import numpy as np
 
@@ -194,11 +194,13 @@ for row in range(n_rows + 1):
                 satellites_edges.append([v, v - n_cols - 1])
             if col != n_cols:
                 satellites_edges.append([v, v - n_cols])
-
-from math import hypot
+n_satellites = len(satellites)
+satellites_graph = [[] for _ in range(n_satellites)]
+for u, v in satellites_edges:
+    satellites_graph[u].append(v)
+    satellites_graph[v].append(u)
 
 # 衛星の家と水源への割り当て
-n_satellites = len(satellites)
 used_satellites = [False] * n_satellites
 house_and_water_source_satellites_indices = []
 dys = []
@@ -241,7 +243,7 @@ for idx_candidate_satellites, yx in zip(
     house_and_water_source_satellites_indices, houses + water_sources
 ):
     satellites[idx_candidate_satellites] = yx
-del satellites_np
+del dys_all, dxs_all, satellites_np, gp_dy, gp_dx, sq_sigma_dyx, dys, dxs, yxs
 
 # 確認
 if True:
@@ -259,12 +261,7 @@ if True:
     plt.show()
 
 
-def excavate(
-    y,
-    x,
-    initial_P,
-    P,
-):
+def excavate(y, x, initial_P, P):
     # 閉区間で返す
     assert 10 <= initial_P <= 5000, initial_P
     assert 1 <= P <= 5000, P
@@ -289,9 +286,18 @@ gp = GaussianProcess(
     sq_sigma_noise=sq_sigma_noise,
     sq_sigma_rbf=sq_sigma_rbf,
 )
+excavated = [False] * (N * N)
+satellites_np = np.array(satellites)
+satellite_states = np.zeros(n_satellites, dtype=np.int32)  # 0: 未到達, 1: 解放, 2: 閉鎖
+satellite_owners = [-1] * n_satellites
+for i, satellite_index in enumerate(house_and_water_source_satellites_indices):
+    satellite_owners[satellite_index] = min(i, K)
 
 
-def excavate_and_postprocess(y, x, initial_P, P):
+def excavate_and_postprocess(satellite_index, initial_P, P):
+    y, x = satellites[satellite_index]
+    v = y * N + x
+    assert not excavated[v]
     mi, ma = excavate(y, x, initial_P, P)
     left_tail_coef = 1.0
     if mi <= ma - P:
@@ -301,18 +307,13 @@ def excavate_and_postprocess(y, x, initial_P, P):
 
     v = y * N + x
     excavated[v] = True
-    # TODO: ここで6方向？
-
-    for dy, dx in dominance_deltas:
-        uy = y + dy
-        ux = x + dx
-        if 0 <= uy < N and 0 <= ux < N:
-            u = uy * N + ux
-            if house_and_water_source_board[u] != -1:
-                uf.unite(dominator[v], house_and_water_source_board[u])
-                continue
-            if dominator[u] == -1:
-                dominator[u] = dominator[v]
+    assert satellite_states[satellite_index] != 2
+    satellite_states[satellite_index] = 2
+    for satellite_u in satellites_graph[satellite_index]:
+        if satellite_states[satellite_u] == 0:
+            satellite_states[satellite_u] = 1
+        elif satellite_states[satellite_u] == 2:
+            uf.unite(satellite_index, satellite_u)
 
     if uf.count(0) == len(houses) + 1:
         return True
@@ -327,7 +328,7 @@ for y, x in houses:
 
 # 優先度順に掘る
 while True:
-    # TODO: 近場を既に掘っていれば候補から外す
+    sate
     for satellite in satellites:
         pass
 
