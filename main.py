@@ -170,30 +170,43 @@ n_cols = 20
 n_rows = int(round(n_cols * 2 / sqrt3))
 
 # 衛星の生成
-candidate_satellites = []
+satellites = []
+satellites_edges = []
 for row in range(n_rows + 1):
     y = (N - 1) * row / n_rows
     if row % 2 == 0:
         for col in range(n_cols):
             x = (N - 1) * (0.5 + col) / n_cols
-            candidate_satellites.append([y, x])
+            v = len(satellites)
+            satellites.append([y, x])
+            if col != 0:
+                satellites_edges.append([v, v - 1])
+            if row != 0:
+                satellites_edges.append([v, v - n_cols - 1])
+                satellites_edges.append([v, v - n_cols])
     else:
         for col in range(n_cols + 1):
             x = (N - 1) * col / n_cols
-            candidate_satellites.append([y, x])
+            v = len(satellites)
+            satellites.append([y, x])
+            if col != 0:
+                satellites_edges.append([v, v - 1])
+                satellites_edges.append([v, v - n_cols - 1])
+            if col != n_cols:
+                satellites_edges.append([v, v - n_cols])
 
 from math import hypot
 
 # 衛星の家と水源への割り当て
-n_candidate_satellites = len(candidate_satellites)
-used_satellites = [False] * n_candidate_satellites
+n_satellites = len(satellites)
+used_satellites = [False] * n_satellites
 house_and_water_source_satellites_indices = []
 dys = []
 dxs = []
 for hy, hx in houses + water_sources:
     best_distance = 1e300
     best_satellites_idx = -100
-    for i, (cy, cx) in enumerate(candidate_satellites):
+    for i, (cy, cx) in enumerate(satellites):
         if used_satellites[i]:
             continue
         distance = hypot(hy - cy, hx - cx)
@@ -202,7 +215,7 @@ for hy, hx in houses + water_sources:
             best_satellites_idx = i
     house_and_water_source_satellites_indices.append(best_satellites_idx)
     used_satellites[best_satellites_idx] = True
-    cy, cx = candidate_satellites[best_satellites_idx]
+    cy, cx = satellites[best_satellites_idx]
     dys.append(hy - cy)
     dxs.append(hx - cx)
 
@@ -217,59 +230,33 @@ gp_dy = GaussianProcess(
 gp_dx = GaussianProcess(
     yxs, dxs, len(yxs), sq_sigma_noise=0.5**2 / sq_sigma_dyx, sq_sigma_rbf=40.0**2.0
 )
-candidate_satellites_np = np.array(candidate_satellites)
-dys_all, _ = gp_dy.predict(candidate_satellites_np, 0.0, sq_sigma_dyx)
-dxs_all, _ = gp_dx.predict(candidate_satellites_np, 0.0, sq_sigma_dyx)
-candidate_satellites = [
+satellites_np = np.array(satellites)
+dys_all, _ = gp_dy.predict(satellites_np, 0.0, sq_sigma_dyx)
+dxs_all, _ = gp_dx.predict(satellites_np, 0.0, sq_sigma_dyx)
+satellites = [
     [max(0, min(N - 1, int(round(y + dy)))), max(0, min(N - 1, int(round(x + dx))))]
-    for (y, x), dy, dx in zip(candidate_satellites, dys_all.tolist(), dxs_all.tolist())
+    for (y, x), dy, dx in zip(satellites, dys_all.tolist(), dxs_all.tolist())
 ]
 for idx_candidate_satellites, yx in zip(
     house_and_water_source_satellites_indices, houses + water_sources
 ):
-    candidate_satellites[idx_candidate_satellites] = yx
-del candidate_satellites_np
-
+    satellites[idx_candidate_satellites] = yx
+del satellites_np
 
 # 確認
 if True:
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=(8, 8))
-    candidate_satellites_np = np.array(candidate_satellites)
-    plt.scatter(candidate_satellites_np[:, 0], candidate_satellites_np[:, 1])
+    satellites_np = np.array(satellites)
+    plt.scatter(satellites_np[:, 0], satellites_np[:, 1])
     house_and_water_sources_np = np.array(houses + water_sources)
     plt.scatter(house_and_water_sources_np[:, 0], house_and_water_sources_np[:, 1])
+    for u, v in satellites_edges:
+        uy, ux = satellites[u]
+        vy, vx = satellites[v]
+        plt.plot([uy, vy], [ux, vx])
     plt.show()
-
-exit()
-
-# TODO: 6 方向
-for y in range(-int(dominance_radius), int(dominance_radius) + 1):
-    for x in range(-int(dominance_radius), int(dominance_radius) + 1):
-        if y == 0 and x == 0:
-            continue
-        if y * y + x * x <= dominance_radius * dominance_radius:
-            dominance_deltas.append((y, x))
-            if y * y + x * x <= dominance_radius * dominance_radius * 0.4 * 0.4:
-                # 新しく候補を置くのを避ける範囲
-                candidate_dominance_deltas.append((y, x))
-
-#
-
-dominator = [-1] * (N * N)
-excavated = [False] * (N * N)
-house_and_water_source_board = [-1] * (N * N)
-candidate_satellites = set()
-candidate_dominance_board = [False] * (N * N)
-for i, (y, x) in enumerate(houses):
-    dominator[y * N + x] = i
-    house_and_water_source_board[y * N + x] = i
-for y, x in enumerate(water_sources):
-    dominator[y * N + x] = K
-    house_and_water_source_board[y * N + x] = K
-
-# TODO: 既存の候補に近すぎるの (距離 2 とか) は入れないようにする
 
 
 def excavate(
