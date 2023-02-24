@@ -1,3 +1,5 @@
+from math import sqrt
+
 import numpy as np
 
 from steiner import solve_steiner
@@ -52,7 +54,7 @@ class GaussianProcess:
         n_data = len(X)
         assert n_data <= n_max_data
         assert X.shape[1] == 2
-        self.gamma = 0.5 / sq_sigma_rbf**2
+        self.gamma = 0.5 / sq_sigma_rbf
         self.K = np.empty((n_max_data, n_max_data))
         K = self.kernel_func(X, X)
         K.flat[:: n_data + 1] += sq_sigma_noise
@@ -61,7 +63,7 @@ class GaussianProcess:
         self.K_inv[:n_data, :n_data] = np.linalg.inv(self.K[:n_data, :n_data])
         self.sq_sigma_noise = sq_sigma_noise
         self.n_data = n_data
-        self.X = np.empty((n_max_data, 2), dtype=np.int32)
+        self.X = np.empty((n_max_data, 2))
         self.X[:n_data] = X
         self.y = np.empty(n_max_data)
         self.y[:n_data] = y
@@ -99,7 +101,7 @@ class GaussianProcess:
             return np.ones(len(A))
         assert A.shape[1] == B.shape[1] == 2
         D = A[:, None, :] - B[None, :, :]
-        K = np.hypot(D[:, :, 0], D[:, :, 1])
+        K = np.square(D).sum(2)
         K = np.exp(-self.gamma * K)
         return K
 
@@ -126,10 +128,13 @@ class GaussianProcess:
 
 N = 200
 
-filename = 0
+# filename = 0
+filename = "./tools/in/0006.txt"
 with open(filename) as f:
     _, K, W, C = map(int, f.readline().split())
-    # true_bedrock = np.array([list(map(int, f.readline().split())) for _ in range(N)], dtype=np.int32)
+    true_bedrock = np.array(
+        [list(map(int, f.readline().split())) for _ in range(N)], dtype=np.int32
+    )
     water_sources = []
     for _ in range(W):
         y, x = map(int, f.readline().split())
@@ -156,12 +161,88 @@ recovery_P = max(1, int(C * RECOVERY_P_COEF))
 
 mu = 2505.0  # 岩盤の頑丈さの事前分布の平均
 sq_sigma = 1000.0**2  # 岩盤の頑丈さの事前分布の分散
-sq_sigma_noise = (10.0 / mu) ** 2  # 岩盤の頑丈さの測定誤差の分散
-sq_sigma_rbf = 10.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
+sq_sigma_noise = (base_P * 1.0) ** 2 / sq_sigma  # 岩盤の頑丈さの測定誤差の分散
+sq_sigma_rbf = 10.0**2.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
 
-dominance_radius = 10.0  # 連結とみなす範囲
-dominance_deltas = []
-candidate_dominance_deltas = []
+sqrt3 = sqrt(3.0)
+
+n_cols = 20
+n_rows = int(round(n_cols * 2 / sqrt3))
+
+# 衛星の生成
+candidate_satellites = []
+for row in range(n_rows + 1):
+    y = (N - 1) * row / n_rows
+    if row % 2 == 0:
+        for col in range(n_cols):
+            x = (N - 1) * (0.5 + col) / n_cols
+            candidate_satellites.append([y, x])
+    else:
+        for col in range(n_cols + 1):
+            x = (N - 1) * col / n_cols
+            candidate_satellites.append([y, x])
+
+from math import hypot
+
+# 衛星の家と水源への割り当て
+n_candidate_satellites = len(candidate_satellites)
+used_satellites = [False] * n_candidate_satellites
+house_and_water_source_satellites_indices = []
+dys = []
+dxs = []
+for hy, hx in houses + water_sources:
+    best_distance = 1e300
+    best_satellites_idx = -100
+    for i, (cy, cx) in enumerate(candidate_satellites):
+        if used_satellites[i]:
+            continue
+        distance = hypot(hy - cy, hx - cx)
+        if distance < best_distance:
+            best_distance = distance
+            best_satellites_idx = i
+    house_and_water_source_satellites_indices.append(best_satellites_idx)
+    used_satellites[best_satellites_idx] = True
+    cy, cx = candidate_satellites[best_satellites_idx]
+    dys.append(hy - cy)
+    dxs.append(hx - cx)
+
+# 衛星の位置の修正
+yxs = np.array(houses + water_sources)
+dys = np.array(dys)
+dxs = np.array(dxs)
+sq_sigma_dyx = (N / n_cols * 0.25) ** 2
+gp_dy = GaussianProcess(
+    yxs, dys, len(yxs), sq_sigma_noise=0.5**2 / sq_sigma_dyx, sq_sigma_rbf=40.0**2.0
+)
+gp_dx = GaussianProcess(
+    yxs, dxs, len(yxs), sq_sigma_noise=0.5**2 / sq_sigma_dyx, sq_sigma_rbf=40.0**2.0
+)
+candidate_satellites_np = np.array(candidate_satellites)
+dys_all, _ = gp_dy.predict(candidate_satellites_np, 0.0, sq_sigma_dyx)
+dxs_all, _ = gp_dx.predict(candidate_satellites_np, 0.0, sq_sigma_dyx)
+candidate_satellites = [
+    [max(0, min(N - 1, int(round(y + dy)))), max(0, min(N - 1, int(round(x + dx))))]
+    for (y, x), dy, dx in zip(candidate_satellites, dys_all.tolist(), dxs_all.tolist())
+]
+for idx_candidate_satellites, yx in zip(
+    house_and_water_source_satellites_indices, houses + water_sources
+):
+    candidate_satellites[idx_candidate_satellites] = yx
+del candidate_satellites_np
+
+
+# 確認
+if True:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 8))
+    candidate_satellites_np = np.array(candidate_satellites)
+    plt.scatter(candidate_satellites_np[:, 0], candidate_satellites_np[:, 1])
+    house_and_water_sources_np = np.array(houses + water_sources)
+    plt.scatter(house_and_water_sources_np[:, 0], house_and_water_sources_np[:, 1])
+    plt.show()
+
+exit()
 
 # TODO: 6 方向
 for y in range(-int(dominance_radius), int(dominance_radius) + 1):
