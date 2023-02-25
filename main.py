@@ -208,16 +208,19 @@ RECOVERY_P_COEF = 3.0
 base_P = max(1, int(C * BASE_P_COEF))
 recovery_P = max(1, int(C * RECOVERY_P_COEF))
 
+STOP_SIGMA = 0.5
+TEMPORAL_PREDICTION_COEF = 1.5
+
 # mu = 2505.0  # 岩盤の頑丈さの事前分布の平均
-MU_START = 2000.0  # [1000, 3000]
-MU_END = 4000  # [2000, 4500]
+MU_START = 1500.0  # [500, 2500]
+MU_END = 2500.0  # [1500, 4000]
 sq_sigma = 1000.0**2  # 岩盤の頑丈さの事前分布の分散
 sq_sigma_noise = (base_P * 1.0) ** 2 / sq_sigma  # 岩盤の頑丈さの測定誤差の分散
 sq_sigma_rbf = 10.0**2.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
 
 sqrt3 = sqrt(3.0)
 
-n_cols = 20
+n_cols = 18
 n_rows = int(round(n_cols * 2 / sqrt3))
 
 # 衛星の生成
@@ -312,21 +315,29 @@ if False:
     plt.show()
 
 
-def excavate(y, x, initial_P, P):
+def excavate(y, x, initial_P, P, current_sum_P=0, stop_sum_P=5000):
     # 閉区間で返す
-    assert 10 <= initial_P <= 5000, initial_P
+    assert (10 <= initial_P <= 5000 and current_sum_P == 0) or (
+        initial_P == 0 and current_sum_P >= 10
+    ), initial_P
     assert 1 <= P <= 5000, P
     assert 0 <= y < N, y
     assert 0 <= x < N, x
-    r = interact(y, x, initial_P)
-    if r == 1:
-        return 10, initial_P
-    sum_P = initial_P
+    assert current_sum_P or initial_P
+    if current_sum_P:
+        sum_P = current_sum_P
+    else:
+        r = interact(y, x, initial_P)
+        if r == 1:
+            return 10, initial_P
+        sum_P = initial_P
     while True:
         r = interact(y, x, P)
         if r == 1:
             return sum_P + 1, sum_P + P
         sum_P += P
+        if stop_sum_P <= sum_P:
+            return sum_P + 1, None
 
 
 # 掘削準備
@@ -340,6 +351,7 @@ gp = GaussianProcess(
 )
 excavated = [False] * (N * N)
 excavated_coords = []
+stopped = [False] * (N * N)
 satellites_np = np.array(satellites)
 satellite_states = np.zeros(n_satellites, dtype=np.int32)  # 0: 未到達, 1: 解放, 2: 閉鎖
 satellite_owners = [-100] * n_satellites  # state が 1 になったときにセットされる
@@ -355,22 +367,40 @@ for satellite_index in house_and_water_source_satellites_indices[K:]:
     satellites_uf.unite(house_and_water_source_satellites_indices[K], satellite_index)
 
 n_excavated = 0
+stop_info = [None] * (N * N)
 
 
-def excavate_and_postprocess(satellite_index, initial_P, P):
+def excavate_and_postprocess(
+    satellite_index, initial_P, P, stop_sum_P=5000, stop_pred=None
+):
     global n_excavated
+    # 再開の時は initial_P いらない
+    if stop_sum_P < 5000:
+        assert stop_pred is not None
     y, x = satellites[satellite_index]
     v = y * N + x
     assert not excavated[v]
+    current_sum_P = stop_info[v][0] if stopped[v] else 0
+    mi, ma = excavate(y, x, initial_P, P, current_sum_P, stop_sum_P)
+    if ma is None:
+        gp_idx = gp.add_data(np.array([y, x]), float(max(stop_pred, mi)))
+        stopped[v] = True
+        stop_info[v] = (
+            mi - 1,
+            gp_idx,
+        )
+        return False
     excavated[v] = True
     excavated_coords.append([y, x])
     n_excavated += 1
-    mi, ma = excavate(y, x, initial_P, P)
-    left_tail_coef = 1.0
+    left_tail_coef = 1.0  # パラメータ
     if mi <= ma - P:
         mi = max(10, ma - P * left_tail_coef)
     estimation = (ma + mi) * 0.5
-    gp.add_data(np.array([y, x]), estimation)
+    if stopped[v]:
+        gp.modify_data(stop_info[v][1], estimation)
+    else:
+        gp.add_data(np.array([y, x]), estimation)
 
     assert satellite_states[satellite_index] != 2
     satellite_states[satellite_index] = 2
@@ -436,7 +466,7 @@ while True:
     sum_inv_sizes = sum(inv_sizes)
 
     # 小さいほど優先
-    coef_sturdiness_std = 0.2
+    coef_sturdiness_std = 0.0
     coef_system_size = 1.0
     coef_system_size_k = 2.0  # パラメータ [0, 10]
     priority = (
@@ -451,19 +481,39 @@ while True:
 
     best_candidate_idx = np.argmin(priority)
     best_satellite_idx = candidate_indices[best_candidate_idx]
-    initial_P = max(
-        10 + base_P,
-        min(
-            5000,
-            int(
-                round(
-                    sturdiness_mean[best_candidate_idx]
-                    - 2.0 * sturdiness_std[best_candidate_idx]
-                )
+    y, x = satellites[best_satellite_idx]
+    v = y * N + x
+    initial_P = (
+        0
+        if stopped[v]
+        else max(
+            10 + base_P,
+            min(
+                5000,
+                int(
+                    round(
+                        sturdiness_mean[best_candidate_idx]
+                        - 2.0 * sturdiness_std[best_candidate_idx]
+                    )
+                ),
             ),
-        ),
+        )
     )  # パラメータ
-    finished = excavate_and_postprocess(best_satellite_idx, initial_P, base_P)
+    if stopped[v]:
+        stop_sum_P = 5000
+        stop_pred = None
+    else:
+        stop_sum_P = (
+            sturdiness_mean[best_candidate_idx]
+            + STOP_SIGMA * sturdiness_std[best_candidate_idx]
+        )
+        stop_pred = (
+            sturdiness_mean[best_candidate_idx]
+            + TEMPORAL_PREDICTION_COEF * sturdiness_std[best_candidate_idx]
+        )
+    finished = excavate_and_postprocess(
+        best_satellite_idx, initial_P, base_P, stop_sum_P, stop_pred
+    )
     if finished:
         break
 
@@ -530,18 +580,26 @@ for y, x in points:
     if excavated[v]:
         continue
     excavated[v] = True
-    initial_P = max(
-        15,
-        min(
-            5000,
-            int(round(all_preds[v])),
-        ),
+    initial_P = (
+        0
+        if stopped[v]
+        else max(
+            15,
+            min(
+                5000,
+                int(round(all_preds[v])),
+            ),
+        )
     )
-    excavate(y, x, initial_P, recovery_P)
+    if stopped[v]:
+        current_sum_P = stop_info[v][0]
+    else:
+        current_sum_P = 0
+
+    excavate(y, x, initial_P, recovery_P, current_sum_P)
 
 # TODO: 信頼度が高い/低い順に掘る？
-# TODO: 調査時の上限
-# TODO: 累乗にする (重要)
+# TODO: 累乗にする
 
 # 1. 水源と家を掘る
 
