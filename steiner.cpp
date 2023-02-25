@@ -163,7 +163,7 @@ struct SteinerTree {
         while (N.size()) {
             const auto [distance_Iv, Iv] = N.top();
             const auto& [I, v] = Iv;
-            os << "d,I,v=" << distance_Iv << "," << I << "," << v << endl;
+            // os << "d,I,v=" << distance_Iv << "," << I << "," << v << endl;
             N.pop();
             if (l[I][v] != distance_Iv)
                 continue;
@@ -171,7 +171,7 @@ struct SteinerTree {
                 break;
             P[I][v] = true;
             for (const auto& [w, c] : G[v]) {
-                os << "w,c=" << w << "," << c << endl;
+                // os << "w,c=" << w << "," << c << endl;
                 const auto new_distance_Iw = l[I][v] + c;
                 if (new_distance_Iw < l[I][w] && !P[I][w]) { // 後半の条件いる？
                     l[I][w] = new_distance_Iw;
@@ -446,7 +446,7 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
         if (mapping_G2_to_G[v_G2].size() != 1) {
             ERROR();
         }
-        const auto v_G1 = mapping_G2_to_G[v_G2][0];
+        auto v_G1 = mapping_G2_to_G[v_G2][0];
         auto v = satellites[v_G1];
         auto idx = 0;
         if (u_G2 == G2_water_source_idx) {
@@ -460,12 +460,14 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
                   us_G1.begin();
         }
 
-        const auto u_G1 = mapping_G2_to_G[u_G2][idx];
+        auto u_G1 = mapping_G2_to_G[u_G2][idx];
         auto u = satellites[u_G1];
         if (v == u)
             ERROR();
-        if (from[v_G1][u.y][u.x] == 0)
+        if (from[v_G1][u.y][u.x] == 0) {
             swap(v, u);
+            swap(v_G1, u_G1);
+        }
         if (from[v_G1][u.y][u.x] == 0)
             ERROR();
 

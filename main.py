@@ -153,7 +153,7 @@ N = 200
 
 SIMULATION = True
 if SIMULATION:
-    filename = "./tools/in/0006.txt"
+    filename = "./tools/in/0000.txt"
     f = open(filename)
     input = f.readline
 # python3 main.py
@@ -493,10 +493,12 @@ if True:
 
     points_np = np.array(points)
     cmap = "coolwarm"
+    X = X_pred[np.array(excavated)]
     plt.figure(figsize=(6, 6))
     plt.imshow(all_preds.reshape(N, N), cmap=cmap, vmin=10, vmax=5000)
     plt.colorbar()
-    plt.scatter(points_np[:, 1], points_np[:, 0], s=3)
+    plt.scatter(points_np[:, 1], points_np[:, 0], s=2, c="yellow")
+    plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
     plt.show()
 
 
