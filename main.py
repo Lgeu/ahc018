@@ -151,9 +151,9 @@ class GaussianProcess:
 
 N = 200
 
-SIMULATION = True
+SIMULATION = False
 if SIMULATION:
-    filename = "./tools/in/0000.txt"
+    filename = "./tools/in/0002.txt"
     f = open(filename)
     input = f.readline
 # python3 main.py
@@ -467,7 +467,6 @@ if False:
     plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
     plt.show()
 
-# 各地点からの
 # シュタイナー
 
 t0 = time()
@@ -501,9 +500,26 @@ if True:
     plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
     plt.show()
 
+# 掘る
+# TODO: これも予測しながら？
+
+for y, x in points:
+    v = y * N + x
+    if excavated[v]:
+        continue
+    excavated[v] = True
+    initial_P = max(
+        15,
+        min(
+            5000,
+            int(round(all_preds[v])),
+        ),
+    )
+    excavate(y, x, initial_P, recovery_P)
 
 # TODO: 信頼度が高い/低い順に掘る？
-
+# TODO: 調査時の上限
+# TODO: 累乗にする (重要)
 
 # 1. 水源と家を掘る
 

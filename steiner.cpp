@@ -292,7 +292,7 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
     for (auto&& t : target_ids)
         fill(t.begin(), t.end(), -1);
     const auto n_satellites = (int)satellites.size();
-    const auto n_targets = min(20, n_satellites);
+    const auto n_targets = min(32, n_satellites);
     auto satellite_numbers = vector<int>(n_satellites);
     iota(satellite_numbers.begin(), satellite_numbers.end(), 0);
 
