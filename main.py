@@ -1,5 +1,6 @@
 import sys
 from math import sqrt, hypot
+from time import time
 
 import numpy as np
 
@@ -56,17 +57,17 @@ class GaussianProcess:
         assert n_data <= n_max_data
         assert X.shape[1] == 2
         self.gamma = 0.5 / sq_sigma_rbf
-        self.K = np.empty((n_max_data, n_max_data))
+        self.K = np.empty((n_max_data, n_max_data), dtype=np.float32)
         K = self.kernel_func(X, X)
         K.flat[:: n_data + 1] += sq_sigma_noise
         self.K[:n_data, :n_data] = K
-        self.K_inv = np.empty((n_max_data, n_max_data))
+        self.K_inv = np.empty((n_max_data, n_max_data), dtype=np.float32)
         self.K_inv[:n_data, :n_data] = np.linalg.inv(self.K[:n_data, :n_data])
         self.sq_sigma_noise = sq_sigma_noise
         self.n_data = n_data
-        self.X = np.empty((n_max_data, 2))
+        self.X = np.empty((n_max_data, 2), dtype=np.float32)
         self.X[:n_data] = X
-        self.y = np.empty(n_max_data)
+        self.y = np.empty(n_max_data, dtype=np.float32)
         self.y[:n_data] = y
 
     def add_data(self, x, y):
@@ -92,7 +93,7 @@ class GaussianProcess:
         self.K_inv[self.n_data, self.n_data] = t
         self.n_data += 1
 
-    def kernel_func(self, A, B=None):
+    def kernel_func(self, A, B=None, perf=False):
         """
         Args:
             A (np.ndarray): [n_data_a, 2]
@@ -101,12 +102,22 @@ class GaussianProcess:
         if B is None:
             return np.ones(len(A))
         assert A.shape[1] == B.shape[1] == 2
-        D = A[:, None, :] - B[None, :, :]
-        K = np.square(D).sum(2)
-        K = np.exp(-self.gamma * K)
+        if perf:
+            t0 = time()
+        D = A[:, None, :].astype(np.float32) - B[None, :, :].astype(np.float32)
+        if perf:
+            t_kernel_func_D = time() - t0
+            print(f"t_kernel_func_D={t_kernel_func_D}", file=sys.stderr)
+        np.square(D, out=D)
+        K = D.sum(2)
+        K *= -self.gamma
+        np.exp(K, out=K)
+        if perf:
+            t_kernel_func = time() - t0
+            print(f"t_kernel_func={t_kernel_func}", file=sys.stderr)
         return K
 
-    def predict(self, X, mu, sq_sigma):
+    def predict(self, X, mu, sq_sigma, return_var=True):
         """
         Args:
             X: [n_data_pred, 2]
@@ -115,9 +126,20 @@ class GaussianProcess:
         """
         assert X.shape[1] == 2
         # [n_data_pred, n_data]  O(n_data_pred * n_data)
-        k_star_T = self.kernel_func(X, self.X[: self.n_data])
+        k_star_T = self.kernel_func(X, self.X[: self.n_data], perf=not return_var)
+        if not return_var:
+            K_inv_y = self.K_inv[: self.n_data, : self.n_data] @ (
+                self.y[: self.n_data] - mu
+            )
+            mean = k_star_T @ K_inv_y + mu
+            return mean
         # [n_data_pred, n_data]  O(n_data_pred * n_data * n_data)
-        k_star_T_K_inv = k_star_T @ self.K_inv[: self.n_data, : self.n_data]
+        k_star_T_K_inv = (
+            k_star_T.astype(np.float64) @ self.K_inv[: self.n_data, : self.n_data]
+        ).astype(
+            np.float32
+        )  # なぜか float64 の方が速い
+
         # [n_data_pred]
         mean = k_star_T_K_inv @ (self.y[: self.n_data] - mu) + mu
         # [n_data_pred]
@@ -134,12 +156,16 @@ if SIMULATION:
     filename = "./tools/in/0006.txt"
     f = open(filename)
     input = f.readline
+# python3 main.py
 # ./tools/target/release/tester python3 main.py < ./tools/in/0006.txt > out.txt
 
 _, W, K, C = map(int, input().split())
-# true_bedrock = np.array(
-#     [list(map(int, input().split())) for _ in range(N)], dtype=np.int32
-# )
+if SIMULATION:
+    true_bedrock = np.array(
+        [list(map(int, input().split())) for _ in range(N)], dtype=np.int32
+    )
+    current_bedrock = true_bedrock.copy()
+consumed_stamina = 0
 water_sources = []
 for _ in range(W):
     y, x = map(int, input().split())
@@ -151,7 +177,19 @@ for _ in range(K):
 
 
 def interact(y, x, P):
-    print(y, x, P, file=sys.stderr)
+    # print(y, x, P, file=sys.stderr)
+    global consumed_stamina
+    consumed_stamina += C + P
+    if SIMULATION:
+        if not isinstance(P, int):
+            raise TypeError
+        if current_bedrock[y, x] <= 0:
+            raise ValueError
+        true_bedrock[y, x] -= P
+        if true_bedrock[y, x] <= 0:
+            return 1
+        else:
+            return 0
     print(y, x, P)
     r = int(input())
     if r == 2 or r == -1:
@@ -165,7 +203,9 @@ RECOVERY_P_COEF = 3.0
 base_P = max(1, int(C * BASE_P_COEF))
 recovery_P = max(1, int(C * RECOVERY_P_COEF))
 
-mu = 2505.0  # 岩盤の頑丈さの事前分布の平均
+# mu = 2505.0  # 岩盤の頑丈さの事前分布の平均
+MU_START = 2000.0  # [1000, 3000]
+MU_END = 4000  # [2000, 4500]
 sq_sigma = 1000.0**2  # 岩盤の頑丈さの事前分布の分散
 sq_sigma_noise = (base_P * 1.0) ** 2 / sq_sigma  # 岩盤の頑丈さの測定誤差の分散
 sq_sigma_rbf = 10.0**2.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
@@ -252,7 +292,7 @@ for idx_satellites, yx in zip(
 del dys_all, dxs_all, satellites_np, gp_dy, gp_dx, sq_sigma_dyx, dys, dxs, yxs
 
 # 確認
-if True:
+if False:
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=(8, 8))
@@ -308,12 +348,16 @@ for satellite_index in house_and_water_source_satellites_indices[K:]:
     satellite_owners[satellite_index] = K
     satellites_uf.unite(house_and_water_source_satellites_indices[K], satellite_index)
 
+n_excavated = 0
+
 
 def excavate_and_postprocess(satellite_index, initial_P, P):
+    global n_excavated
     y, x = satellites[satellite_index]
     v = y * N + x
     assert not excavated[v]
     excavated[v] = True
+    n_excavated += 1
     mi, ma = excavate(y, x, initial_P, P)
     left_tail_coef = 1.0
     if mi <= ma - P:
@@ -348,14 +392,21 @@ def excavate_and_postprocess(satellite_index, initial_P, P):
 for i in house_and_water_source_satellites_indices:
     excavate_and_postprocess(i, 10 + base_P, base_P)
 
+
+T0 = time()
+t_predict = 0.0
+
+
 # 優先度順に衛星を掘る
 while True:
     # closed_indices, = np.where(satellite_states == 2)
     (candidate_indices,) = np.where(satellite_states == 1)
-    # sq_sigma あたりの変化もパラメータ？
+    mu = MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
+    t0 = time()
     sturdiness_mean, sturdiness_var = gp.predict(
         satellites_np[candidate_indices], mu, sq_sigma
     )
+    t_predict += time() - t0
     sturdiness_std = np.sqrt(sturdiness_var)
     # TODO: これ修正
     # 小ささになってくれない
@@ -392,11 +443,19 @@ while True:
     if finished:
         break
 
+t_satellite = time() - T0
+
+print(f"t_satellite={t_satellite}", file=sys.stderr)
+print(f"`- t_predict={t_predict}", file=sys.stderr)
+
 # 検証
-if True:
+if False:
+    import matplotlib.pyplot as plt
+
+    print(f"mu={mu}", file=sys.stderr)
     cmap = "coolwarm"
     X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
-    mean, _ = gp.predict(X_pred, mu, sq_sigma)
+    mean = gp.predict(X_pred, mu, sq_sigma, return_var=False)
     mean = mean.reshape(N, N)
     excavated_np = np.array(excavated)
     X = X_pred[excavated_np]
@@ -406,7 +465,19 @@ if True:
     plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
     plt.show()
 
-# TODO: シュタイナー
+# 各地点からの
+# シュタイナー
+
+# これもパラメータにした方が良いのでは
+t0 = time()
+mu = max(2505.0, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites))
+X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
+all_preds = gp.predict(X_pred, mu, sq_sigma, return_var=False)
+t_all_prediction = time() - t0
+print(f"t_all_prediction={t_all_prediction}", file=sys.stderr)
+
+# solve_steiner()
+
 # TODO: 信頼度が高い/低い順に掘る？
 
 
