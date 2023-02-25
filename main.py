@@ -92,6 +92,11 @@ class GaussianProcess:
         self.K_inv[: self.n_data, self.n_data] = -tv
         self.K_inv[self.n_data, self.n_data] = t
         self.n_data += 1
+        return self.n_data - 1
+
+    def modify_data(self, idx, y):
+        assert idx < self.n_data
+        self.y[idx] = y
 
     def kernel_func(self, A, B=None, perf=False):
         """
@@ -378,7 +383,9 @@ def excavate_and_postprocess(satellite_index, initial_P, P):
             satellite_owners[satellite_u] = owner
         elif satellite_states[satellite_u] == 1:
             # これだけだと逆転した時に困る
-            if satellites_uf.count(satellite_index) < satellites_uf.count(satellite_u):
+            if satellites_uf.count(satellite_index) < satellites_uf.count(
+                house_and_water_source_satellites_indices[satellite_owners[satellite_u]]
+            ):
                 satellite_owners[satellite_u] = owner
         elif satellite_states[satellite_u] == 2:
             uf.unite(owner, satellite_owners[satellite_u])
@@ -412,7 +419,21 @@ while True:
     sturdiness_std = np.sqrt(sturdiness_var)
     # TODO: これ修正
     # 小ささになってくれない
-    system_size = np.array([satellites_uf.count(i) for i in candidate_indices.tolist()])
+    system_size = np.array(
+        [
+            satellites_uf.count(
+                house_and_water_source_satellites_indices[satellite_owners[i]]
+            )
+            for i in candidate_indices.tolist()
+        ]
+    )
+
+    inv_sizes = [
+        1 / satellites_uf.count(i_sat)
+        for i, i_sat in enumerate(house_and_water_source_satellites_indices[: K + 1])
+        if i == uf.root(i)
+    ]
+    sum_inv_sizes = sum(inv_sizes)
 
     # 小さいほど優先
     coef_sturdiness_std = 0.2
@@ -423,8 +444,9 @@ while True:
         - coef_sturdiness_std * sturdiness_std
         - coef_system_size
         * np.mean(sturdiness_mean)
-        * (1.0 + coef_system_size_k)
+        * (1 + coef_system_size_k)
         / (system_size + coef_system_size_k)
+        / sum_inv_sizes
     )
 
     best_candidate_idx = np.argmin(priority)
