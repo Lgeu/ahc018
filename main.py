@@ -205,23 +205,34 @@ def interact(y, x, P):
 BASE_P_COEF = 3.0
 RECOVERY_P_COEF = 3.0
 
-base_P = max(1, int(C * BASE_P_COEF))
-recovery_P = max(1, int(C * RECOVERY_P_COEF))
-
 STOP_SIGMA = 0.5
 TEMPORAL_PREDICTION_COEF = 1.5
 
-# mu = 2505.0  # 岩盤の頑丈さの事前分布の平均
-MU_START = 1500.0  # [500, 2500]
+MU_START = 1500.0  # [500, 2500]  # 岩盤の頑丈さの事前分布の平均
 MU_END = 2500.0  # [1500, 4000]
+SIGMA = 1000.0  # 岩盤の頑丈さの事前分布の標準偏差
+NOISE_BASE_P_RATIO = 1.0
+SIGMA_RBF = 10.0
+N_COLS = 18  # [10, 25]
+
+LEFT_TAIL_COEF = 1.0
+
+PRIORITY_COEF_STURDINESS_STD = 0.0  # [-1, 1]
+PRIORITY_COEF_SYSTEM_SIZE = 1.0
+PRIORITY_COEF_SYSTEM_SIZE_K = 2.0  # [0, 10]
+COEF_INITIAL_P_STD = 2.0  # [0.5, 4]
+
+MIN_STEINER_MU = 2000.0  # [1000.0, 3000.0]
+
+base_P = max(1, int(C * BASE_P_COEF))
+recovery_P = max(1, int(C * RECOVERY_P_COEF))
+
 sq_sigma = 1000.0**2  # 岩盤の頑丈さの事前分布の分散
-sq_sigma_noise = (base_P * 1.0) ** 2 / sq_sigma  # 岩盤の頑丈さの測定誤差の分散
-sq_sigma_rbf = 10.0**2.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
+sq_sigma_noise = (base_P * NOISE_BASE_P_RATIO) ** 2.0 / sq_sigma  # 岩盤の頑丈さの測定誤差の分散
+sq_sigma_rbf = SIGMA_RBF**2.0  # 頑丈さの測定が周囲どれくらいの範囲の予測に影響するか
 
-sqrt3 = sqrt(3.0)
+n_rows = int(round(N_COLS * 2 / sqrt(3.0)))
 
-n_cols = 18
-n_rows = int(round(n_cols * 2 / sqrt3))
 
 # 衛星の生成
 satellites = []
@@ -229,25 +240,25 @@ satellites_edges = []
 for row in range(n_rows + 1):
     y = (N - 1) * row / n_rows
     if row % 2 == 0:
-        for col in range(n_cols):
-            x = (N - 1) * (0.5 + col) / n_cols
+        for col in range(N_COLS):
+            x = (N - 1) * (0.5 + col) / N_COLS
             v = len(satellites)
             satellites.append([y, x])
             if col != 0:
                 satellites_edges.append([v, v - 1])
             if row != 0:
-                satellites_edges.append([v, v - n_cols - 1])
-                satellites_edges.append([v, v - n_cols])
+                satellites_edges.append([v, v - N_COLS - 1])
+                satellites_edges.append([v, v - N_COLS])
     else:
-        for col in range(n_cols + 1):
-            x = (N - 1) * col / n_cols
+        for col in range(N_COLS + 1):
+            x = (N - 1) * col / N_COLS
             v = len(satellites)
             satellites.append([y, x])
             if col != 0:
                 satellites_edges.append([v, v - 1])
-                satellites_edges.append([v, v - n_cols - 1])
-            if col != n_cols:
-                satellites_edges.append([v, v - n_cols])
+                satellites_edges.append([v, v - N_COLS - 1])
+            if col != N_COLS:
+                satellites_edges.append([v, v - N_COLS])
 n_satellites = len(satellites)
 satellites_graph = [[] for _ in range(n_satellites)]
 for u, v in satellites_edges:
@@ -279,7 +290,7 @@ for hy, hx in houses + water_sources:
 yxs = np.array(houses + water_sources)
 dys = np.array(dys)
 dxs = np.array(dxs)
-sq_sigma_dyx = (N / n_cols * 0.25) ** 2
+sq_sigma_dyx = (N / N_COLS * 0.25) ** 2
 gp_dy = GaussianProcess(
     yxs, dys, len(yxs), sq_sigma_noise=0.5**2 / sq_sigma_dyx, sq_sigma_rbf=40.0**2.0
 )
@@ -393,9 +404,8 @@ def excavate_and_postprocess(
     excavated[v] = True
     excavated_coords.append([y, x])
     n_excavated += 1
-    left_tail_coef = 1.0  # パラメータ
     if mi <= ma - P:
-        mi = max(10, ma - P * left_tail_coef)
+        mi = max(10, ma - P * LEFT_TAIL_COEF)
     estimation = (ma + mi) * 0.5
     if stopped[v]:
         gp.modify_data(stop_info[v][1], estimation)
@@ -438,13 +448,13 @@ t_predict = 0.0
 
 # 優先度順に衛星を掘る
 while True:
-    # closed_indices, = np.where(satellite_states == 2)
     (candidate_indices,) = np.where(satellite_states == 1)
     mu = MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
     t0 = time()
     sturdiness_mean, sturdiness_var = gp.predict(
         satellites_np[candidate_indices], mu, sq_sigma
     )
+    sturdiness_var = np.maximum(1e-2, sturdiness_var)  # なぜか負になる……
     t_predict += time() - t0
     sturdiness_std = np.sqrt(sturdiness_var)
     # TODO: これ修正
@@ -466,16 +476,13 @@ while True:
     sum_inv_sizes = sum(inv_sizes)
 
     # 小さいほど優先
-    coef_sturdiness_std = 0.0
-    coef_system_size = 1.0
-    coef_system_size_k = 2.0  # パラメータ [0, 10]
     priority = (
         sturdiness_mean
-        - coef_sturdiness_std * sturdiness_std
-        - coef_system_size
+        - PRIORITY_COEF_STURDINESS_STD * sturdiness_std
+        - PRIORITY_COEF_SYSTEM_SIZE
         * np.mean(sturdiness_mean)
-        * (1 + coef_system_size_k)
-        / (system_size + coef_system_size_k)
+        * (1 + PRIORITY_COEF_SYSTEM_SIZE_K)
+        / (system_size + PRIORITY_COEF_SYSTEM_SIZE_K)
         / sum_inv_sizes
     )
 
@@ -483,6 +490,7 @@ while True:
     best_satellite_idx = candidate_indices[best_candidate_idx]
     y, x = satellites[best_satellite_idx]
     v = y * N + x
+
     initial_P = (
         0
         if stopped[v]
@@ -493,12 +501,12 @@ while True:
                 int(
                     round(
                         sturdiness_mean[best_candidate_idx]
-                        - 2.0 * sturdiness_std[best_candidate_idx]
+                        - COEF_INITIAL_P_STD * sturdiness_std[best_candidate_idx]
                     )
                 ),
             ),
         )
-    )  # パラメータ
+    )
     if stopped[v]:
         stop_sum_P = 5000
         stop_pred = None
@@ -542,9 +550,7 @@ if False:
 # シュタイナー
 
 t0 = time()
-mu = max(
-    2505.0, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
-)  # これもパラメータにした方が良いのでは
+mu = max(MIN_STEINER_MU, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites))
 X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
 all_preds = gp.predict(X_pred, mu, sq_sigma, return_var=False)
 all_preds = np.clip(all_preds, 10.0, 5000.0)
@@ -600,35 +606,3 @@ for y, x in points:
 
 # TODO: 信頼度が高い/低い順に掘る？
 # TODO: 累乗にする
-
-# 1. 水源と家を掘る
-
-# 2. 予測をし、以下を繰り返す
-#   a. 何らかの基準で候補地をソート
-#   b. 最も良さそうな候補を、何らかの閾値まで掘り進める
-#   c. 掘り切れなかった場合は次のループへ
-#   d. 予測を更新し、全域木を構築できるようになった場合はループを抜ける
-
-# 3. シュタイナー木を構築し、その通りにやる？
-
-# クラスカルっぽくやるのが多分良い
-# いやブルーフカっぽく？
-
-# 左手法はやや深めの部分を掘ることになるので微妙？
-
-# 山を下る必要がある場合
-# * 上下左右を間隔開けて 1 つ抜けるまで掘る
-# * 抜けた部分のからの上下左右も 1 つ抜けるまで掘る
-#   * コストが増えるしかなかったら元のも探す
-# 山を下るのはそもそも効率悪い？
-# * 山スタートをどの程度許容するかパラメータにできないか？
-# 予測は？
-
-# 何らかの基準で掘る場所と閾値を決める
-# * 既に掘り進めていること
-# * 予測値が小さいこと
-# * 未知の家に近いこと (所属する連結成分の小ささ)
-# * 既に掘った場所に囲まれていないこと
-# * 座標が中央に近いこと
-
-# 誤読！！！！！！！！！！！！！！！！！！！！！
