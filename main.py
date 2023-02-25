@@ -1,3 +1,4 @@
+import sys
 from math import sqrt, hypot
 
 import numpy as np
@@ -128,26 +129,31 @@ class GaussianProcess:
 
 N = 200
 
-# filename = 0
-filename = "./tools/in/0006.txt"
-with open(filename) as f:
-    _, K, W, C = map(int, f.readline().split())
-    true_bedrock = np.array(
-        [list(map(int, f.readline().split())) for _ in range(N)], dtype=np.int32
-    )
-    water_sources = []
-    for _ in range(W):
-        y, x = map(int, f.readline().split())
-        water_sources.append([y, x])
-    houses = []
-    for _ in range(K):
-        y, x = map(int, f.readline().split())
-        houses.append([y, x])
+SIMULATION = False
+if SIMULATION:
+    filename = "./tools/in/0006.txt"
+    f = open(filename)
+    input = f.readline
+# ./tools/target/release/tester python3 main.py < ./tools/in/0006.txt > out.txt
+
+_, W, K, C = map(int, input().split())
+# true_bedrock = np.array(
+#     [list(map(int, input().split())) for _ in range(N)], dtype=np.int32
+# )
+water_sources = []
+for _ in range(W):
+    y, x = map(int, input().split())
+    water_sources.append([y, x])
+houses = []
+for _ in range(K):
+    y, x = map(int, input().split())
+    houses.append([y, x])
 
 
 def interact(y, x, P):
+    print(y, x, P, file=sys.stderr)
     print(y, x, P)
-    r = int(f.readline())
+    r = int(input())
     if r == 2 or r == -1:
         exit()
     return r
@@ -207,17 +213,17 @@ dys = []
 dxs = []
 for hy, hx in houses + water_sources:
     best_distance = 1e300
-    best_satellites_idx = -100
+    best_satellite_idx = -100
     for i, (cy, cx) in enumerate(satellites):
         if used_satellites[i]:
             continue
         distance = hypot(hy - cy, hx - cx)
         if distance < best_distance:
             best_distance = distance
-            best_satellites_idx = i
-    house_and_water_source_satellites_indices.append(best_satellites_idx)
-    used_satellites[best_satellites_idx] = True
-    cy, cx = satellites[best_satellites_idx]
+            best_satellite_idx = i
+    house_and_water_source_satellites_indices.append(best_satellite_idx)
+    used_satellites[best_satellite_idx] = True
+    cy, cx = satellites[best_satellite_idx]
     dys.append(hy - cy)
     dxs.append(hx - cx)
 
@@ -239,10 +245,10 @@ satellites = [
     [max(0, min(N - 1, int(round(y + dy)))), max(0, min(N - 1, int(round(x + dx))))]
     for (y, x), dy, dx in zip(satellites, dys_all.tolist(), dxs_all.tolist())
 ]
-for idx_candidate_satellites, yx in zip(
+for idx_satellites, yx in zip(
     house_and_water_source_satellites_indices, houses + water_sources
 ):
-    satellites[idx_candidate_satellites] = yx
+    satellites[idx_satellites] = yx
 del dys_all, dxs_all, satellites_np, gp_dy, gp_dx, sq_sigma_dyx, dys, dxs, yxs
 
 # 確認
@@ -278,9 +284,10 @@ def excavate(y, x, initial_P, P):
         sum_P += P
 
 
+# 掘削準備
 uf = UnionFind(K + 1)
 gp = GaussianProcess(
-    np.zeros(0, 2),
+    np.zeros((0, 2)),
     np.zeros(0),
     n_max_data=2000,
     sq_sigma_noise=sq_sigma_noise,
@@ -289,15 +296,24 @@ gp = GaussianProcess(
 excavated = [False] * (N * N)
 satellites_np = np.array(satellites)
 satellite_states = np.zeros(n_satellites, dtype=np.int32)  # 0: 未到達, 1: 解放, 2: 閉鎖
-satellite_owners = [-1] * n_satellites
-for i, satellite_index in enumerate(house_and_water_source_satellites_indices):
-    satellite_owners[satellite_index] = min(i, K)
+satellite_owners = [-100] * n_satellites  # state が 1 になったときにセットされる
+satellites_uf = UnionFind(n_satellites)
+for i, satellite_index in enumerate(house_and_water_source_satellites_indices[:K]):
+    assert satellite_states[satellite_index] == 0
+    satellite_states[satellite_index] = 1
+    satellite_owners[satellite_index] = i
+for satellite_index in house_and_water_source_satellites_indices[K:]:
+    assert satellite_states[satellite_index] == 0
+    satellite_states[satellite_index] = 1
+    satellite_owners[satellite_index] = K
+    satellites_uf.unite(house_and_water_source_satellites_indices[K], satellite_index)
 
 
 def excavate_and_postprocess(satellite_index, initial_P, P):
     y, x = satellites[satellite_index]
     v = y * N + x
     assert not excavated[v]
+    excavated[v] = True
     mi, ma = excavate(y, x, initial_P, P)
     left_tail_coef = 1.0
     if mi <= ma - P:
@@ -305,32 +321,93 @@ def excavate_and_postprocess(satellite_index, initial_P, P):
     estimation = (ma + mi) * 0.5
     gp.add_data(np.array([y, x]), estimation)
 
-    v = y * N + x
-    excavated[v] = True
     assert satellite_states[satellite_index] != 2
     satellite_states[satellite_index] = 2
+    owner = satellite_owners[satellite_index]
+    assert owner != -100
     for satellite_u in satellites_graph[satellite_index]:
         if satellite_states[satellite_u] == 0:
             satellite_states[satellite_u] = 1
+            assert satellite_owners[satellite_u] == -100
+            satellite_owners[satellite_u] = owner
+        elif satellite_states[satellite_u] == 1:
+            # これだけだと逆転した時に困る
+            if satellites_uf.count(satellite_index) < satellites_uf.count(satellite_u):
+                satellite_owners[satellite_u] = owner
         elif satellite_states[satellite_u] == 2:
-            uf.unite(satellite_index, satellite_u)
-
-    if uf.count(0) == len(houses) + 1:
+            uf.unite(owner, satellite_owners[satellite_u])
+            satellites_uf.unite(satellite_index, satellite_u)
+        else:
+            assert False
+    if uf.count(0) == K + 1:
         return True
     return False
 
 
 # 水源と家を掘る
-for y, x in water_sources:
-    excavate_and_postprocess(y, x, 10 + base_P, base_P)
-for y, x in houses:
-    excavate_and_postprocess(y, x, 10 + base_P, base_P)
+for i in house_and_water_source_satellites_indices:
+    excavate_and_postprocess(i, 10 + base_P, base_P)
 
-# 優先度順に掘る
+# 優先度順に衛星を掘る
 while True:
-    sate
-    for satellite in satellites:
-        pass
+    # closed_indices, = np.where(satellite_states == 2)
+    (candidate_indices,) = np.where(satellite_states == 1)
+    # sq_sigma あたりの変化もパラメータ？
+    sturdiness_mean, sturdiness_var = gp.predict(
+        satellites_np[candidate_indices], mu, sq_sigma
+    )
+    sturdiness_std = np.sqrt(sturdiness_var)
+    # TODO: これ修正
+    # 小ささになってくれない
+    system_size = np.array([satellites_uf.count(i) for i in candidate_indices.tolist()])
+
+    # 小さいほど優先
+    coef_sturdiness_std = 0.2
+    coef_system_size = 1.0
+    coef_system_size_k = 2.0  # パラメータ [0, 10]
+    priority = (
+        sturdiness_mean
+        - coef_sturdiness_std * sturdiness_std
+        - coef_system_size
+        * np.mean(sturdiness_mean)
+        * (1.0 + coef_system_size_k)
+        / (system_size + coef_system_size_k)
+    )
+
+    best_candidate_idx = np.argmin(priority)
+    best_satellite_idx = candidate_indices[best_candidate_idx]
+    initial_P = max(
+        10 + base_P,
+        min(
+            5000,
+            int(
+                round(
+                    sturdiness_mean[best_candidate_idx]
+                    - 2.0 * sturdiness_std[best_candidate_idx]
+                )
+            ),
+        ),
+    )  # パラメータ
+    finished = excavate_and_postprocess(best_satellite_idx, initial_P, base_P)
+    if finished:
+        break
+
+# 検証
+if True:
+    cmap = "coolwarm"
+    X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
+    mean, _ = gp.predict(X_pred, mu, sq_sigma)
+    mean = mean.reshape(N, N)
+    excavated_np = np.array(excavated)
+    X = X_pred[excavated_np]
+    plt.figure(figsize=(6, 6))
+    plt.imshow(mean, cmap=cmap, vmin=10, vmax=5000)
+    plt.colorbar()
+    plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
+    plt.show()
+
+# TODO: シュタイナー
+# TODO: 信頼度が高い/低い順に掘る？
 
 
 # 1. 水源と家を掘る
@@ -361,5 +438,6 @@ while True:
 # * 予測値が小さいこと
 # * 未知の家に近いこと (所属する連結成分の小ささ)
 # * 既に掘った場所に囲まれていないこと
+# * 座標が中央に近いこと
 
 # 誤読！！！！！！！！！！！！！！！！！！！！！
