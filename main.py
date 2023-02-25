@@ -4,7 +4,7 @@ from time import time
 
 import numpy as np
 
-from steiner import solve_steiner
+from steiner import solve_dijkstra_and_steiner
 
 
 class UnionFind:
@@ -151,7 +151,7 @@ class GaussianProcess:
 
 N = 200
 
-SIMULATION = False
+SIMULATION = True
 if SIMULATION:
     filename = "./tools/in/0006.txt"
     f = open(filename)
@@ -334,6 +334,7 @@ gp = GaussianProcess(
     sq_sigma_rbf=sq_sigma_rbf,
 )
 excavated = [False] * (N * N)
+excavated_coords = []
 satellites_np = np.array(satellites)
 satellite_states = np.zeros(n_satellites, dtype=np.int32)  # 0: 未到達, 1: 解放, 2: 閉鎖
 satellite_owners = [-100] * n_satellites  # state が 1 になったときにセットされる
@@ -357,6 +358,7 @@ def excavate_and_postprocess(satellite_index, initial_P, P):
     v = y * N + x
     assert not excavated[v]
     excavated[v] = True
+    excavated_coords.append([y, x])
     n_excavated += 1
     mi, ma = excavate(y, x, initial_P, P)
     left_tail_coef = 1.0
@@ -468,15 +470,35 @@ if False:
 # 各地点からの
 # シュタイナー
 
-# これもパラメータにした方が良いのでは
 t0 = time()
-mu = max(2505.0, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites))
+mu = max(
+    2505.0, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
+)  # これもパラメータにした方が良いのでは
 X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
 all_preds = gp.predict(X_pred, mu, sq_sigma, return_var=False)
+all_preds = np.clip(all_preds, 10.0, 5000.0)
 t_all_prediction = time() - t0
 print(f"t_all_prediction={t_all_prediction}", file=sys.stderr)
 
-# solve_steiner()
+
+points = solve_dijkstra_and_steiner(
+    all_preds.reshape(N, N).tolist(),
+    excavated_coords,
+    list(range(K)),
+    list(range(K, K + W)),
+)
+
+if True:
+    import matplotlib.pyplot as plt
+
+    points_np = np.array(points)
+    cmap = "coolwarm"
+    plt.figure(figsize=(6, 6))
+    plt.imshow(all_preds.reshape(N, N), cmap=cmap, vmin=10, vmax=5000)
+    plt.colorbar()
+    plt.scatter(points_np[:, 1], points_np[:, 0], s=3)
+    plt.show()
+
 
 # TODO: 信頼度が高い/低い順に掘る？
 

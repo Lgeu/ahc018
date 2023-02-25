@@ -119,7 +119,7 @@ struct SteinerTree {
     };
 
     // 入力
-    vector<vector<Edge>> G; //グラフ
+    vector<vector<Edge>> G; // グラフ
     vector<int> R;          // ターミナル集合
 
     array<array<array<Index, 2>, kMaxNNodes>, 1 << (kMaxNTerminals - 1)> b;
@@ -156,6 +156,10 @@ struct SteinerTree {
         os << "ok1" << endl;
         os << "G.size()=" << G.size() << endl;
         os << "R.size()=" << R.size() << endl;
+        os << "R=";
+        for (const auto& r : R)
+            os << r << ",";
+        os << endl;
         while (N.size()) {
             const auto [distance_Iv, Iv] = N.top();
             const auto& [I, v] = Iv;
@@ -167,8 +171,7 @@ struct SteinerTree {
                 break;
             P[I][v] = true;
             for (const auto& [w, c] : G[v]) {
-                os << "w,c=" << w << ","
-                   << "c" << endl;
+                os << "w,c=" << w << "," << c << endl;
                 const auto new_distance_Iw = l[I][v] + c;
                 if (new_distance_Iw < l[I][w] && !P[I][w]) { // 後半の条件いる？
                     l[I][w] = new_distance_Iw;
@@ -246,6 +249,8 @@ using Point = Vec2<int>;
 static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
     // 入力: 盤面の値、掘った衛星の場所、家と水源が何番目の衛星か
 
+    auto os = ofstream("log.txt");
+
     PyObject *board_py, *satellites_py, *houses_py, *water_sources_py;
 
     PARSE_ARGS("OOOO", &board_py, &satellites_py, &houses_py,
@@ -277,13 +282,10 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
     auto board = PyIterableToVector<vector<float>>(board_py, parse_vf);
     const auto satellites = PyIterableToVector<Point>(satellites_py, parse_p);
     const auto houses = PyIterableToVector<int>(houses_py, parse_i);
-    const auto water_sources = PyIterableToVector<int>(houses_py, parse_i);
+    const auto water_sources =
+        PyIterableToVector<int>(water_sources_py, parse_i);
     for (const auto& s : satellites)
         board[s.y][s.x] = 0;
-
-    auto steiner = SteinerTree();
-    auto& G = steiner.G;
-    auto& R = steiner.R;
 
     // 各衛星に対して
     auto target_ids = array<array<int, 200>, 200>();
@@ -300,7 +302,7 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
         fill(d.begin(), d.end(), numeric_limits<float>::infinity());
     static constexpr auto kDirections =
         array<Point, 4>{Point{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
-    G.resize(n_satellites);
+    auto G = vector<vector<SteinerTree::Edge>>(n_satellites);
     for (auto idx_satellites = 0; idx_satellites < n_satellites;
          idx_satellites++) {
         const auto& start = satellites[idx_satellites];
@@ -354,8 +356,13 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
                 for (auto i = 0; i < 4; i++) {
                     const auto d = kDirections[i];
                     const auto u = v + d;
-                    if ((u - start).l1_norm() > max_l_distance)
+                    if ((u - start).l2_norm_square() >
+                            max_l_distance * max_l_distance ||
+                        u.y < 0 || u.y >= 200 || u.x < 0 || u.x >= 200)
                         continue;
+                    if (board[u.y][u.x] < 0.0) {
+                        ERROR();
+                    }
                     const auto u_distance = v_distance + board[u.y][u.x];
                     if (u_distance < distances[u.y][u.x]) {
                         distances[u.y][u.x] = u_distance;
@@ -363,9 +370,10 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
                         q.emplace(u_distance, u);
                     }
                 }
-                if (n_found_satellites != n_targets) {
-                    ERROR();
-                }
+            }
+            os << "found: " << n_found_satellites << "/" << n_targets << endl;
+            if (n_found_satellites != n_targets) {
+                ERROR();
             }
 
             // 戻す
@@ -386,6 +394,98 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
             }
         }
     }
+
+    auto steiner = SteinerTree();
+    auto& G2 = steiner.G;
+    auto& R = steiner.R;
+
+    // 縮約
+    const auto G2_water_source_idx = n_satellites - (int)water_sources.size();
+    G2.resize(G2_water_source_idx + 1);
+    auto mapping_G_to_G2 = vector<int>(n_satellites);
+    fill(mapping_G_to_G2.begin(), mapping_G_to_G2.end(), -1);
+    {
+        for (const auto i : water_sources)
+            mapping_G_to_G2[i] = G2_water_source_idx;
+        auto n = 0;
+        for (auto&& i : mapping_G_to_G2)
+            if (i != G2_water_source_idx)
+                i = n++;
+        if (n != G2_water_source_idx) {
+            ERROR();
+        }
+    }
+    auto mapping_G2_to_G = vector<vector<int>>(G2.size());
+    for (auto i = 0; i < n_satellites; i++) {
+        mapping_G2_to_G[mapping_G_to_G2[i]].push_back(i);
+        for (const auto [u, c] : G[i])
+            G2[mapping_G_to_G2[i]].push_back({mapping_G_to_G2[u], c});
+    }
+
+    for (const auto r : houses)
+        R.push_back(mapping_G_to_G2[r]);
+    R.push_back(G2_water_source_idx);
+
+    os << "mapping_G_to_G2=";
+    for (const auto& m : mapping_G_to_G2)
+        os << m << ",";
+    os << endl;
+
+    os << "End dijkstra" << endl;
+
+    steiner.Solve();
+
+    os << "End steiner" << endl;
+    os << "steiner.result_edges.size()=" << steiner.result_edges.size() << endl;
+
+    // 復元
+    auto result = vector<Point>();
+    for (auto [v_G2, u_G2] : steiner.result_edges) {
+        if (v_G2 > u_G2)
+            swap(v_G2, u_G2);
+        if (mapping_G2_to_G[v_G2].size() != 1) {
+            ERROR();
+        }
+        const auto v_G1 = mapping_G2_to_G[v_G2][0];
+        auto v = satellites[v_G1];
+        auto idx = 0;
+        if (u_G2 == G2_water_source_idx) {
+            // u を 1 つに定める
+            const auto& us_G1 = mapping_G2_to_G[u_G2];
+            idx = min_element(us_G1.begin(), us_G1.end(),
+                              [&satellites, &v](const int l, const int r) {
+                                  return (satellites[l] - v).l1_norm() <
+                                         (satellites[r] - v).l1_norm();
+                              }) -
+                  us_G1.begin();
+        }
+
+        const auto u_G1 = mapping_G2_to_G[u_G2][idx];
+        auto u = satellites[u_G1];
+        if (v == u)
+            ERROR();
+        if (from[v_G1][u.y][u.x] == 0)
+            swap(v, u);
+        if (from[v_G1][u.y][u.x] == 0)
+            ERROR();
+
+        while (u != v) {
+            result.push_back(u);
+            u -= kDirections[from[v_G1][u.y][u.x] - 1];
+        }
+    }
+
+    // Python のリストにする
+    PyObject* result_py = PyList_New(result.size());
+    if (result_py == NULL)
+        return NULL;
+    for (auto i = 0; i < (int)result.size(); i++) {
+        PyObject* const item = Py_BuildValue("[ii]", result[i].y, result[i].x);
+        if (item == NULL)
+            return NULL; // 本当は result_py を DECREF する必要が
+        PyList_SET_ITEM(result_py, i, item);
+    }
+    return result_py;
 }
 
 static PyObject* Solve(PyObject* /* self */, PyObject* args) {
@@ -463,6 +563,8 @@ static PyObject* Solve(PyObject* /* self */, PyObject* args) {
 
 static PyMethodDef steiner_methods[] = {
     {"solve_steiner", (PyCFunction)Solve, METH_VARARGS, "solve_steiner"},
+    {"solve_dijkstra_and_steiner", (PyCFunction)SolveDijkstraAndSteiner,
+     METH_VARARGS, "solve_steiner"},
     {NULL},
 };
 
