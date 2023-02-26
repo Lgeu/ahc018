@@ -126,7 +126,7 @@ struct SteinerTree {
     vector<pair<int, int>> result_edges; // ここに結果が格納される
 
     void Solve() {
-        auto os = ofstream("log2.txt");
+        auto os = ofstream("/dev/null");
         static array<array<T, kMaxNNodes>, 1 << (kMaxNTerminals - 1)> l; // 距離
         const auto comp = [](const pair<T, Index>& a, const pair<T, Index>& b) {
             return a.first > b.first;
@@ -220,7 +220,7 @@ struct SteinerTree {
 
 #define ERROR()                                                                \
     {                                                                          \
-        ofstream os("error_log.txt");                                          \
+        ofstream os("/dev/null");                                              \
         os << "Error at line " << __LINE__ << endl;                            \
         assert(false);                                                         \
     }
@@ -249,7 +249,7 @@ using Point = Vec2<int>;
 static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
     // 入力: 盤面の値、掘った衛星の場所、家と水源が何番目の衛星か
 
-    auto os = ofstream("log.txt");
+    auto os = ofstream("/dev/null");
 
     PyObject *board_py, *satellites_py, *houses_py, *water_sources_py;
 
@@ -491,7 +491,7 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
 }
 
 static PyObject* Solve(PyObject* /* self */, PyObject* args) {
-    auto os = ofstream("log.txt");
+    auto os = ofstream("/dev/null");
     os << "ok1" << endl;
     // グラフとターミナル集合を受け取る
     auto steiner = SteinerTree();
