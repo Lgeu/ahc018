@@ -1,8 +1,523 @@
+import os
 import sys
 from math import sqrt, hypot
-from time import time
 
 import numpy as np
+
+
+STEINER_SOURCE = r"""
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <fstream>
+#include <functional>
+#include <limits>
+#include <numeric>
+#include <queue>
+#include <utility>
+#include <vector>
+
+using namespace std;
+
+template <typename T> struct Vec2 {
+    /*
+    y 軸正は下方向
+    x 軸正は右方向
+    回転は時計回りが正（y 軸正を上と考えると反時計回りになる）
+    */
+    using value_type = T;
+    T y, x;
+    constexpr inline Vec2() = default;
+    constexpr Vec2(const T& arg_y, const T& arg_x) : y(arg_y), x(arg_x) {}
+    inline Vec2(const Vec2&) = default;            // コピー
+    inline Vec2(Vec2&&) = default;                 // ムーブ
+    inline Vec2& operator=(const Vec2&) = default; // 代入
+    inline Vec2& operator=(Vec2&&) = default;      // ムーブ代入
+    template <typename S>
+    constexpr inline Vec2(const Vec2<S>& v) : y((T)v.y), x((T)v.x) {}
+    inline Vec2 operator+(const Vec2& rhs) const {
+        return Vec2(y + rhs.y, x + rhs.x);
+    }
+    inline Vec2 operator+(const T& rhs) const { return Vec2(y + rhs, x + rhs); }
+    inline Vec2 operator-(const Vec2& rhs) const {
+        return Vec2(y - rhs.y, x - rhs.x);
+    }
+    template <typename S> inline Vec2 operator*(const S& rhs) const {
+        return Vec2(y * rhs, x * rhs);
+    }
+    inline Vec2 operator*(const Vec2& rhs) const { // x + yj とみなす
+        return Vec2(x * rhs.y + y * rhs.x, x * rhs.x - y * rhs.y);
+    }
+    template <typename S> inline Vec2 operator/(const S& rhs) const {
+        assert(rhs != 0.0);
+        return Vec2(y / rhs, x / rhs);
+    }
+    inline Vec2 operator/(const Vec2& rhs) const { // x + yj とみなす
+        return (*this) * rhs.inv();
+    }
+    inline Vec2& operator+=(const Vec2& rhs) {
+        y += rhs.y;
+        x += rhs.x;
+        return *this;
+    }
+    inline Vec2& operator-=(const Vec2& rhs) {
+        y -= rhs.y;
+        x -= rhs.x;
+        return *this;
+    }
+    template <typename S> inline Vec2& operator*=(const S& rhs) const {
+        y *= rhs;
+        x *= rhs;
+        return *this;
+    }
+    inline Vec2& operator*=(const Vec2& rhs) { return *this = (*this) * rhs; }
+    inline Vec2& operator/=(const Vec2& rhs) { return *this = (*this) / rhs; }
+    inline bool operator!=(const Vec2& rhs) const {
+        return x != rhs.x || y != rhs.y;
+    }
+    inline bool operator==(const Vec2& rhs) const {
+        return x == rhs.x && y == rhs.y;
+    }
+    inline void rotate(const double& rad) { *this = rotated(rad); }
+    inline Vec2<double> rotated(const double& rad) const {
+        return (*this) * rotation(rad);
+    }
+    static inline Vec2<double> rotation(const double& rad) {
+        return Vec2(sin(rad), cos(rad));
+    }
+    inline Vec2<double> rounded() const {
+        return Vec2<double>(round(y), round(x));
+    }
+    inline Vec2<double> inv() const { // x + yj とみなす
+        const double norm_sq = l2_norm_square();
+        assert(norm_sq != 0.0);
+        return Vec2(-y / norm_sq, x / norm_sq);
+    }
+    inline double l2_norm() const { return sqrt(x * x + y * y); }
+    inline double l2_norm_square() const { return x * x + y * y; }
+    inline T l1_norm() const { return std::abs(x) + std::abs(y); }
+    inline double abs() const { return l2_norm(); }
+    inline double phase() const { // [-PI, PI) のはず
+        return atan2(y, x);
+    }
+};
+template <typename T, typename S>
+inline Vec2<T> operator*(const S& lhs, const Vec2<T>& rhs) {
+    return rhs * lhs;
+}
+template <typename T> ostream& operator<<(ostream& os, const Vec2<T>& vec) {
+    os << vec.y << ' ' << vec.x;
+    return os;
+}
+
+struct SteinerTree {
+    using T = float;
+    static constexpr auto kMaxNTerminals = 11;
+    static constexpr auto kMaxNNodes = 2000;
+    struct Edge {
+        int to;
+        T cost;
+    };
+    struct Index {
+        short terminal_set; // 無ければ -1
+        unsigned short node;
+    };
+
+    // 入力
+    vector<vector<Edge>> G; // グラフ
+    vector<int> R;          // ターミナル集合
+
+    array<array<array<Index, 2>, kMaxNNodes>, 1 << (kMaxNTerminals - 1)> b;
+    vector<pair<int, int>> result_edges; // ここに結果が格納される
+
+    void Solve() {
+        static array<array<T, kMaxNNodes>, 1 << (kMaxNTerminals - 1)> l; // 距離
+        const auto comp = [](const pair<T, Index>& a, const pair<T, Index>& b) {
+            return a.first > b.first;
+        };
+        auto N = priority_queue<pair<T, Index>, vector<pair<T, Index>>,
+                                decltype(comp)>(comp); // キュー
+        static array<array<bool, kMaxNNodes>,
+                     1 << (kMaxNTerminals - 1)>
+            P; // 確定したかどうか
+        for (auto&& li : l)
+            fill(li.begin(), li.end(), numeric_limits<T>::infinity());
+        for (auto i = 0; i < (int)R.size() - 1; i++) {
+            auto r = R[i];
+            l[1 << i][r] = 0;
+            N.emplace((T)0, Index{(short)(1 << i), (unsigned short)r});
+        }
+        for (auto&& Pi : P)
+            fill(Pi.begin(), Pi.end(), false);
+        for (auto v = 0; v < (int)G.size(); v++) {
+            l[0][v] = 0;
+            P[0][v] = true;
+        }
+        for (auto&& bi : b)
+            for (auto&& bij : bi)
+                bij = {Index{-1, 0}, {-1, 0}};
+        const auto full = (short)((1 << ((int)R.size() - 1)) - 1);
+        while (N.size()) {
+            const auto [distance_Iv, Iv] = N.top();
+            const auto& [I, v] = Iv;
+            N.pop();
+            if (l[I][v] != distance_Iv)
+                continue;
+            if (I == full && v == R.back())
+                break;
+            P[I][v] = true;
+            for (const auto& [w, c] : G[v]) {
+                const auto new_distance_Iw = l[I][v] + c;
+                if (new_distance_Iw < l[I][w] && !P[I][w]) { // 後半の条件いる？
+                    l[I][w] = new_distance_Iw;
+                    b[I][w] = {Index{I, v}, {-1, 0}};
+                    N.emplace(new_distance_Iw, Index{I, (unsigned short)w});
+                }
+            }
+            // ~I の空でない部分集合
+            for (short J = full & ~I; J > 0; J = (J - 1) & ~I) {
+                if (!P[J][v])
+                    continue;
+                const auto IJ = I | J;
+                const auto new_distance_IJv = l[I][v] + l[J][v];
+                if (new_distance_IJv < l[IJ][v] && !P[IJ][v]) {
+                    l[IJ][v] = new_distance_IJv;
+                    b[IJ][v] = {Index{I, v}, Index{J, v}};
+                    N.emplace(new_distance_IJv, Index{(short)IJ, v});
+                }
+            }
+        }
+        // 復元
+        result_edges.clear();
+        BackTrack({full, (unsigned short)R.back()});
+    }
+
+    void BackTrack(const Index& Iv) {
+        const auto& [I, v] = Iv;
+        if (b[I][v][0].terminal_set == -1)
+            return;
+        if (b[I][v][1].terminal_set == -1) {
+            assert(b[I][v][0].terminal_set == I);
+            const auto w = b[I][v][0].node;
+            result_edges.emplace_back((int)v, (int)w);
+            BackTrack({I, w});
+            return;
+        }
+        BackTrack(b[I][v][0]);
+        BackTrack(b[I][v][1]);
+    }
+};
+
+#define PARSE_ARGS(types, ...)                                                 \
+    if (!PyArg_ParseTuple(args, types, __VA_ARGS__))                           \
+    return NULL
+
+#define ERROR()                                                                \
+    {                                                                          \
+        ofstream os("/dev/null");                                              \
+        os << "Error at line " << __LINE__ << endl;                            \
+        assert(false);                                                         \
+    }
+
+#define ERROR_IF_NULL(obj)                                                     \
+    if ((obj) == NULL)                                                         \
+    ERROR()
+
+template <class T, class ItemParseFunc>
+static vector<T> PyIterableToVector(PyObject* const iterable,
+                                    const ItemParseFunc& parse) {
+    PyObject* iter = PyObject_GetIter(iterable);
+    ERROR_IF_NULL(iter);
+    PyObject* item;
+    auto res = vector<T>();
+    while ((item = PyIter_Next(iter))) {
+        res.push_back(parse(item));
+        Py_DECREF(item);
+    }
+    Py_DECREF(iter);
+    return res;
+}
+
+using Point = Vec2<int>;
+
+static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
+    // 入力: 盤面の値、掘った衛星の場所、家と水源が何番目の衛星か
+
+    PyObject *board_py, *satellites_py, *houses_py, *water_sources_py;
+
+    PARSE_ARGS("OOOO", &board_py, &satellites_py, &houses_py,
+               &water_sources_py);
+
+    const auto parse_i = [](PyObject* const obj) {
+        return (int)PyLong_AsLong(obj);
+    };
+    const auto parse_p = [](PyObject* const obj) {
+        PyObject* const iter = PyObject_GetIter(obj);
+        ERROR_IF_NULL(iter);
+        auto item = PyIter_Next(iter);
+        ERROR_IF_NULL(item);
+        const auto first = (int)PyLong_AsLong(item);
+        Py_DECREF(item);
+        item = PyIter_Next(iter);
+        ERROR_IF_NULL(item);
+        const auto second = (int)PyLong_AsLong(item);
+        Py_DECREF(item);
+        Py_DECREF(iter);
+        return Point(first, second);
+    };
+    const auto parse_f = [](PyObject* const obj) {
+        return (float)PyFloat_AsDouble(obj);
+    };
+    const auto parse_vf = [&parse_f](PyObject* const obj) {
+        return PyIterableToVector<float>(obj, parse_f);
+    };
+    auto board = PyIterableToVector<vector<float>>(board_py, parse_vf);
+    const auto satellites = PyIterableToVector<Point>(satellites_py, parse_p);
+    const auto houses = PyIterableToVector<int>(houses_py, parse_i);
+    const auto water_sources =
+        PyIterableToVector<int>(water_sources_py, parse_i);
+    for (const auto& s : satellites)
+        board[s.y][s.x] = 0;
+
+    // 各衛星に対して
+    auto target_ids = array<array<int, 200>, 200>();
+    for (auto&& t : target_ids)
+        fill(t.begin(), t.end(), -1);
+    const auto n_satellites = (int)satellites.size();
+    const auto n_targets = min(32, n_satellites);
+    auto satellite_numbers = vector<int>(n_satellites);
+    iota(satellite_numbers.begin(), satellite_numbers.end(), 0);
+
+    auto distances = array<array<float, 200>, 200>();
+    static auto from = array<array<array<signed char, 200>, 200>, 2000>();
+    for (auto&& d : distances)
+        fill(d.begin(), d.end(), numeric_limits<float>::infinity());
+    static constexpr auto kDirections =
+        array<Point, 4>{Point{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
+    auto G = vector<vector<SteinerTree::Edge>>(n_satellites);
+    for (auto idx_satellites = 0; idx_satellites < n_satellites;
+         idx_satellites++) {
+        const auto& start = satellites[idx_satellites];
+
+        // 距離が近い衛星を n_targets 個取り出す
+        auto sq_distances = vector<int>(n_satellites);
+        for (auto u = 0; u < n_satellites; u++)
+            sq_distances[u] = (start - satellites[u]).l2_norm_square();
+        partial_sort(
+            satellite_numbers.begin(), satellite_numbers.begin() + n_targets,
+            satellite_numbers.end(), [&sq_distances](const int l, const int r) {
+                return sq_distances[l] < sq_distances[r];
+            });
+        for (auto i = 0; i < n_targets; i++) {
+            const auto u = satellite_numbers[i];
+            const auto [uy, ux] = satellites[u];
+            target_ids[uy][ux] = u;
+        }
+
+        const auto max_l_distance =
+            (int)sqrt(sq_distances[satellite_numbers[n_targets - 1]]) + 1;
+
+        // ダイクストラ
+        {
+            distances[start.y][start.x] = 0.0;
+            auto n_found_satellites = 1;
+            if (target_ids[start.y][start.x] != idx_satellites) {
+                ERROR();
+            }
+            target_ids[start.y][start.x] = -1;
+            auto comp = [](const pair<float, Point>& l,
+                           const pair<float, Point>& r) {
+                return l.first > r.first;
+            };
+            auto q =
+                priority_queue<pair<float, Point>, vector<pair<float, Point>>,
+                               decltype(comp)>(comp);
+            q.emplace(0.0, start);
+            while (!q.empty()) {
+                const auto [v_distance, v] = q.top();
+                q.pop();
+                if (distances[v.y][v.x] != v_distance)
+                    continue;
+                const auto v_idx = target_ids[v.y][v.x];
+                if (v_idx != -1) {
+                    G[idx_satellites].push_back({v_idx, v_distance});
+                    target_ids[v.y][v.x] = -1;
+                    n_found_satellites++;
+                }
+
+                for (auto i = 0; i < 4; i++) {
+                    const auto d = kDirections[i];
+                    const auto u = v + d;
+                    if ((u - start).l2_norm_square() >
+                            max_l_distance * max_l_distance ||
+                        u.y < 0 || u.y >= 200 || u.x < 0 || u.x >= 200)
+                        continue;
+                    if (board[u.y][u.x] < 0.0) {
+                        ERROR();
+                    }
+                    const auto u_distance = v_distance + board[u.y][u.x];
+                    if (u_distance < distances[u.y][u.x]) {
+                        distances[u.y][u.x] = u_distance;
+                        from[idx_satellites][u.y][u.x] = (signed char)(i + 1);
+                        q.emplace(u_distance, u);
+                    }
+                }
+            }
+            if (n_found_satellites != n_targets) {
+                ERROR();
+            }
+
+            // 戻す
+            for (auto y = max(0, start.y - max_l_distance);
+                 y <= min(199, start.y + max_l_distance); y++)
+                for (auto x = max(0, start.x - max_l_distance);
+                     x <= min(199, start.x + max_l_distance); x++)
+                    distances[y][x] = numeric_limits<float>::infinity();
+        }
+
+        // 戻す
+        for (auto i = 0; i < n_targets; i++) {
+            const auto u = satellite_numbers[i];
+            const auto [uy, ux] = satellites[u];
+            // target_ids[uy][ux] = -1;
+            if (target_ids[uy][ux] != -1) {
+                ERROR();
+            }
+        }
+    }
+
+    auto steiner = SteinerTree();
+    auto& G2 = steiner.G;
+    auto& R = steiner.R;
+
+    // 縮約
+    const auto G2_water_source_idx = n_satellites - (int)water_sources.size();
+    G2.resize(G2_water_source_idx + 1);
+    auto mapping_G_to_G2 = vector<int>(n_satellites);
+    fill(mapping_G_to_G2.begin(), mapping_G_to_G2.end(), -1);
+    {
+        for (const auto i : water_sources)
+            mapping_G_to_G2[i] = G2_water_source_idx;
+        auto n = 0;
+        for (auto&& i : mapping_G_to_G2)
+            if (i != G2_water_source_idx)
+                i = n++;
+        if (n != G2_water_source_idx) {
+            ERROR();
+        }
+    }
+    auto mapping_G2_to_G = vector<vector<int>>(G2.size());
+    for (auto i = 0; i < n_satellites; i++) {
+        mapping_G2_to_G[mapping_G_to_G2[i]].push_back(i);
+        for (const auto [u, c] : G[i])
+            G2[mapping_G_to_G2[i]].push_back({mapping_G_to_G2[u], c});
+    }
+
+    for (const auto r : houses)
+        R.push_back(mapping_G_to_G2[r]);
+    R.push_back(G2_water_source_idx);
+
+    steiner.Solve();
+
+    // 復元
+    auto result = vector<Point>();
+    for (auto [v_G2, u_G2] : steiner.result_edges) {
+        if (v_G2 > u_G2)
+            swap(v_G2, u_G2);
+        if (mapping_G2_to_G[v_G2].size() != 1) {
+            ERROR();
+        }
+        auto v_G1 = mapping_G2_to_G[v_G2][0];
+        auto v = satellites[v_G1];
+        auto u_G1 = mapping_G2_to_G[u_G2][0]; // 仮
+        if (u_G2 == G2_water_source_idx) {
+            // u を 1 つに定める
+            auto us_G1 = mapping_G2_to_G[u_G2];
+            while (1) {
+                auto it =
+                    min_element(us_G1.begin(), us_G1.end(),
+                                [&satellites, &v](const int l, const int r) {
+                                    return (satellites[l] - v).l1_norm() <
+                                           (satellites[r] - v).l1_norm();
+                                });
+                u_G1 = *it;
+
+                auto u = satellites[u_G1];
+                if (from[v_G1][u.y][u.x] != 0)
+                    break;
+                if (from[u_G1][v.y][v.x] != 0)
+                    break;
+                us_G1.erase(it);
+            }
+        }
+
+        auto u = satellites[u_G1];
+        if (v == u) {
+            ERROR();
+        }
+        if (from[v_G1][u.y][u.x] == 0) {
+            swap(v, u);
+            swap(v_G1, u_G1);
+        }
+        if (from[v_G1][u.y][u.x] == 0) {
+            ERROR();
+        }
+        while (u != v) {
+            result.push_back(u);
+            u -= kDirections[from[v_G1][u.y][u.x] - 1];
+        }
+    }
+
+    // Python のリストにする
+    PyObject* result_py = PyList_New(result.size());
+    if (result_py == NULL)
+        return NULL;
+    for (auto i = 0; i < (int)result.size(); i++) {
+        PyObject* const item = Py_BuildValue("[ii]", result[i].y, result[i].x);
+        if (item == NULL)
+            return NULL; // 本当は result_py を DECREF する必要が
+        PyList_SET_ITEM(result_py, i, item);
+    }
+    return result_py;
+}
+
+static PyMethodDef steiner_methods[] = {
+    {"solve_dijkstra_and_steiner", (PyCFunction)SolveDijkstraAndSteiner,
+     METH_VARARGS, "solve_steiner"},
+    {NULL},
+};
+
+static PyModuleDef steiner_module = {PyModuleDef_HEAD_INIT, "steiner", NULL, -1,
+                                     steiner_methods};
+
+PyMODINIT_FUNC PyInit_steiner(void) { return PyModule_Create(&steiner_module); }
+"""
+
+SETUP_SOURCE = r"""
+from distutils.core import setup, Extension
+
+module = Extension(
+    "steiner",
+    sources=["steiner.cpp"],
+    extra_compile_args=["-O3", "-march=native", "-std=c++17"],
+)
+setup(
+    name="steiner",
+    version="0.1.0",
+    description="Steiner tree problem solver.",
+    ext_modules=[module],
+)
+"""
+
+if sys.argv[-1] == "ONLINE_JUDGE":  # or os.getcwd() != "/imojudge/sandbox":
+    with open("steiner_.cpp", "w") as f:
+        f.write(STEINER_SOURCE)
+    with open("setup_.py", "w") as f:
+        f.write(SETUP_SOURCE)
+    os.system(f"{sys.executable} setup_.py build_ext --inplace > /dev/null")
 
 from steiner import solve_dijkstra_and_steiner
 
@@ -42,7 +557,7 @@ class UnionFind:
 
 
 class GaussianProcess:
-    # TODO: 修正コレスキー分解
+    # 修正コレスキー分解使えるかも
     def __init__(self, X, y, n_max_data, sq_sigma_noise, sq_sigma_rbf):
         """
         Args:
@@ -107,19 +622,11 @@ class GaussianProcess:
         if B is None:
             return np.ones(len(A))
         assert A.shape[1] == B.shape[1] == 2
-        if perf:
-            t0 = time()
         D = A[:, None, :].astype(np.float32) - B[None, :, :].astype(np.float32)
-        # if perf:
-        #     t_kernel_func_D = time() - t0
-        #     print(f"t_kernel_func_D={t_kernel_func_D}", file=sys.stderr)
         np.square(D, out=D)
         K = D.sum(2)
         K *= -self.gamma
         np.exp(K, out=K)
-        # if perf:
-        #     t_kernel_func = time() - t0
-        #     print(f"t_kernel_func={t_kernel_func}", file=sys.stderr)
         return K
 
     def predict(self, X, mu, sq_sigma, return_var=True):
@@ -198,16 +705,6 @@ params = {
 def main():
     global input
 
-    for arg in sys.argv[1:]:
-        if "=" in arg:
-            arg = arg.split("=")
-            if len(arg) == 2:
-                l, r = arg
-                try:
-                    params[l] = eval(r)
-                except:
-                    pass
-
     BASE_P_COEF = params["BASE_P_COEF"]
     RECOVERY_P_COEF = params["RECOVERY_P_COEF"]
     STOP_SIGMA = params["STOP_SIGMA"]
@@ -227,11 +724,9 @@ def main():
 
     SIMULATION = False
     if SIMULATION:
-        filename = "./tools/in/0165.txt"
+        filename = "./tools/in/0238.txt"
         f = open(filename)
         input = f.readline
-    # python3 main.py
-    # ./tools/target/release/tester python3 main.py < ./tools/in/0006.txt > out.txt
 
     _, W, K, C = map(int, input().split())
     if SIMULATION:
@@ -250,7 +745,6 @@ def main():
         houses.append([y, x])
 
     def interact(y, x, P):
-        # print(y, x, P, file=sys.stderr)
         nonlocal consumed_stamina
         consumed_stamina += C + P
         if SIMULATION:
@@ -361,21 +855,6 @@ def main():
     ):
         satellites[idx_satellites] = yx
     del dys_all, dxs_all, satellites_np, gp_dy, gp_dx, sq_sigma_dyx, dys, dxs, yxs
-
-    # 確認
-    if False:
-        import matplotlib.pyplot as plt
-
-        plt.figure(figsize=(8, 8))
-        satellites_np = np.array(satellites)
-        plt.scatter(satellites_np[:, 0], satellites_np[:, 1])
-        house_and_water_sources_np = np.array(houses + water_sources)
-        plt.scatter(house_and_water_sources_np[:, 0], house_and_water_sources_np[:, 1])
-        for u, v in satellites_edges:
-            uy, ux = satellites[u]
-            vy, vx = satellites[v]
-            plt.plot([uy, vy], [ux, vx])
-        plt.show()
 
     def excavate(y, x, initial_P, P, current_sum_P=0, stop_sum_P=5000):
         # 閉区間で返す
@@ -493,19 +972,14 @@ def main():
     for i in house_and_water_source_satellites_indices:
         excavate_and_postprocess(i, 10 + base_P, base_P)
 
-    T0 = time()
-    t_predict = 0.0
-
     # 優先度順に衛星を掘る
     while True:
         (candidate_indices,) = np.where(satellite_states == 1)
         mu = MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
-        t0 = time()
         sturdiness_mean, sturdiness_var = gp.predict(
             satellites_np[candidate_indices], mu, sq_sigma
         )
         sturdiness_var = np.maximum(1e-2, sturdiness_var)  # なぜか負になる……
-        t_predict += time() - t0
         sturdiness_std = np.sqrt(sturdiness_var)
         # TODO: これ修正
         # 小ささになってくれない
@@ -577,39 +1051,14 @@ def main():
         if finished:
             break
 
-    t_satellite = time() - T0
-
-    # print(f"t_satellite={t_satellite}", file=sys.stderr)
-    # print(f"`- t_predict={t_predict}", file=sys.stderr)
-
-    # 検証
-    if False:
-        import matplotlib.pyplot as plt
-
-        print(f"mu={mu}", file=sys.stderr)
-        cmap = "coolwarm"
-        X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
-        mean = gp.predict(X_pred, mu, sq_sigma, return_var=False)
-        mean = mean.reshape(N, N)
-        excavated_np = np.array(excavated)
-        X = X_pred[excavated_np]
-        plt.figure(figsize=(6, 6))
-        plt.imshow(mean, cmap=cmap, vmin=10, vmax=5000)
-        plt.colorbar()
-        plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
-        plt.show()
-
     # シュタイナー
 
-    t0 = time()
     mu = max(
         MIN_STEINER_MU, MU_START + (MU_END - MU_START) * (n_excavated / n_satellites)
     )
     X_pred = np.array([[y, x] for y in range(N) for x in range(N)])
     all_preds = gp.predict(X_pred, mu, sq_sigma, return_var=False)
     all_preds = np.clip(all_preds, 10.0, 5000.0)
-    t_all_prediction = time() - t0
-    # print(f"t_all_prediction={t_all_prediction}", file=sys.stderr)
 
     points = solve_dijkstra_and_steiner(
         all_preds.reshape(N, N).tolist(),
@@ -617,19 +1066,6 @@ def main():
         list(range(K)),
         list(range(K, K + W)),
     )
-
-    if False:
-        import matplotlib.pyplot as plt
-
-        points_np = np.array(points)
-        cmap = "coolwarm"
-        X = X_pred[np.array(excavated)]
-        plt.figure(figsize=(6, 6))
-        plt.imshow(all_preds.reshape(N, N), cmap=cmap, vmin=10, vmax=5000)
-        plt.colorbar()
-        plt.scatter(points_np[:, 1], points_np[:, 0], s=2, c="yellow")
-        plt.scatter(X[:, 1], X[:, 0], s=4, c="white", marker="x")
-        plt.show()
 
     # 掘る
     # TODO: これも予測しながら？
@@ -656,9 +1092,6 @@ def main():
             current_sum_P = 0
 
         excavate(y, x, initial_P, recovery_P, current_sum_P)
-
-    # TODO: 信頼度が高い/低い順に掘る？
-    # TODO: 累乗にする
 
 
 main()

@@ -220,9 +220,9 @@ struct SteinerTree {
 
 #define ERROR()                                                                \
     {                                                                          \
-        ofstream os("/dev/null");                                              \
+        ofstream os("error_log.txt");                                          \
         os << "Error at line " << __LINE__ << endl;                            \
-        assert(false);                                                         \
+        abort();                                                               \
     }
 
 #define ERROR_IF_NULL(obj)                                                     \
@@ -249,7 +249,7 @@ using Point = Vec2<int>;
 static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
     // 入力: 盤面の値、掘った衛星の場所、家と水源が何番目の衛星か
 
-    auto os = ofstream("/dev/null");
+    auto os = ofstream("log.txt");
 
     PyObject *board_py, *satellites_py, *houses_py, *water_sources_py;
 
@@ -448,31 +448,48 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
         }
         auto v_G1 = mapping_G2_to_G[v_G2][0];
         auto v = satellites[v_G1];
-        auto idx = 0;
+        auto u_G1 = mapping_G2_to_G[u_G2][0]; // 仮
         if (u_G2 == G2_water_source_idx) {
             // u を 1 つに定める
-            const auto& us_G1 = mapping_G2_to_G[u_G2];
-            idx = min_element(us_G1.begin(), us_G1.end(),
-                              [&satellites, &v](const int l, const int r) {
-                                  return (satellites[l] - v).l1_norm() <
-                                         (satellites[r] - v).l1_norm();
-                              }) -
-                  us_G1.begin();
+            auto us_G1 = mapping_G2_to_G[u_G2];
+            while (1) {
+                auto it =
+                    min_element(us_G1.begin(), us_G1.end(),
+                                [&satellites, &v](const int l, const int r) {
+                                    return (satellites[l] - v).l1_norm() <
+                                           (satellites[r] - v).l1_norm();
+                                });
+                u_G1 = *it;
+                // os << "v=" << v << endl;
+                // for (auto i = 0; i < us_G1.size(); i++) {
+                //     os << "us_G1[i]=" << i << ":" << us_G1[i] << ":"
+                //        << satellites[us_G1[i]] << endl;
+                // }
+
+                auto u = satellites[u_G1];
+                if (from[v_G1][u.y][u.x] != 0)
+                    break;
+                if (from[u_G1][v.y][v.x] != 0)
+                    break;
+                us_G1.erase(it);
+            }
         }
 
-        auto u_G1 = mapping_G2_to_G[u_G2][idx];
         auto u = satellites[u_G1];
-        if (v == u)
+        if (v == u) {
             ERROR();
+        }
         if (from[v_G1][u.y][u.x] == 0) {
             swap(v, u);
             swap(v_G1, u_G1);
         }
-        if (from[v_G1][u.y][u.x] == 0)
+        if (from[v_G1][u.y][u.x] == 0) {
             ERROR();
-
+        }
         while (u != v) {
             result.push_back(u);
+            const auto dir_int = (int)from[v_G1][u.y][u.x];
+            // os << "dir_int=" << dir_int << endl;
             u -= kDirections[from[v_G1][u.y][u.x] - 1];
         }
     }

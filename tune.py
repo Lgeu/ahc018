@@ -53,7 +53,7 @@ def run(cmd, name, scores):
     try:
         proc.wait(timeout=10.0)
     except:
-        pass
+        proc.kill()
     return proc
 
 
