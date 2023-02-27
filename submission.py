@@ -501,7 +501,7 @@ from distutils.core import setup, Extension
 
 module = Extension(
     "steiner",
-    sources=["steiner.cpp"],
+    sources=["steiner_.cpp"],
     extra_compile_args=["-O3", "-march=native", "-std=c++17"],
 )
 setup(
@@ -663,45 +663,6 @@ class GaussianProcess:
 
 N = 200
 
-params = dict(
-    BASE_P_COEF=3.0,
-    RECOVERY_P_COEF=3.0,
-    STOP_SIGMA=0.5,
-    TEMPORAL_PREDICTION_COEF=1.5,
-    MU_START=1500.0,  # [500, 2500]  # 岩盤の頑丈さの事前分布の平均
-    MU_END=2500.0,  # [1500, 4000]
-    SIGMA=1000.0,  # 岩盤の頑丈さの事前分布の標準偏差
-    NOISE_BASE_P_RATIO=1.0,
-    SIGMA_RBF=10.0,
-    N_COLS=18,  # [10, 25]
-    LEFT_TAIL_COEF=1.0,
-    PRIORITY_COEF_STURDINESS_STD=0.0,  # [-1, 1]
-    PRIORITY_COEF_SYSTEM_SIZE=1.0,
-    PRIORITY_COEF_SYSTEM_SIZE_K=2.0,  # [0, 10]
-    COEF_INITIAL_P_STD=2.0,  # [0.5, 4]
-    MIN_STEINER_MU=2000.0,  # [1000.0, 3000.0]
-)
-
-# 11.636111155963222
-params = {
-    "BASE_P_COEF": 4.086361827749314,
-    "COEF_INITIAL_P_STD": 2.716238958014798,
-    "LEFT_TAIL_COEF": 2.1152027331538013,
-    "MIN_STEINER_MU": 1044.017407551411,
-    "MU_END": 1980.4716569162727,
-    "MU_START": 1195.425808024243,
-    "NOISE_BASE_P_RATIO": 0.5629917195152011,
-    "N_COLS": 15,
-    "PRIORITY_COEF_STURDINESS_STD": 0.2602150750825655,
-    "PRIORITY_COEF_SYSTEM_SIZE": 1.990928304497543,
-    "PRIORITY_COEF_SYSTEM_SIZE_K": 2.383998528482987,
-    "RECOVERY_P_COEF": 3.7019778138973525,
-    "SIGMA": 1592.7288608682672,
-    "SIGMA_RBF": 13.157213004689595,
-    "STOP_SIGMA": 0.14420014220340238,
-    "TEMPORAL_PREDICTION_COEF": 0.2361066425020843,
-}
-
 # 11.583815975676561
 params = {
     "BASE_P_COEF": 3.296632677298496,
@@ -745,7 +706,7 @@ def main():
 
     SIMULATION = False
     if SIMULATION:
-        filename = "./tools/in/0238.txt"
+        filename = 0  # "./tools/in/0238.txt"
         f = open(filename)
         input = f.readline
 

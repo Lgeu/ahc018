@@ -488,7 +488,7 @@ static PyObject* SolveDijkstraAndSteiner(PyObject* /* self */, PyObject* args) {
         }
         while (u != v) {
             result.push_back(u);
-            const auto dir_int = (int)from[v_G1][u.y][u.x];
+            // const auto dir_int = (int)from[v_G1][u.y][u.x];
             // os << "dir_int=" << dir_int << endl;
             u -= kDirections[from[v_G1][u.y][u.x] - 1];
         }
